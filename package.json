@@ -1,5 +1,5 @@
 {
-  "name": "cpe-duty-schedule-v2-online",
+  "name": "cpe-duty-schedule-v3-online",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -12,6 +12,7 @@
     "next": "^16.3.5",
     "react": "19.1.1",
     "react-dom": "19.1.1",
+    "jszip": "^3.10.2",
     "xlsx-populate": "^1.21.0"
   },
   "devDependencies": {

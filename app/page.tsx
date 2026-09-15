@@ -2,7 +2,7 @@
 
 import { FormEvent, useMemo, useState } from "react";
 
-type StepId = "step1" | "step2" | "step3";
+type StepId = "step1" | "step3";
 
 type UploadField = {
   name: string;
@@ -20,7 +20,6 @@ type WorkflowStep = {
   outputName: string;
   buttonText: string;
   fields: UploadField[];
-  before: string[];
   after: string[];
   sampleHref: string;
   sampleText: string;
@@ -30,71 +29,42 @@ const steps: WorkflowStep[] = [
   {
     id: "step1",
     number: "1",
-    title: "Create Exam Date Sheet",
-    subtitle: "Upload the subject-code Excel file and the official exam timetable PDF.",
+    title: "Create Exam Dates and Unavailability",
+    subtitle: "Upload the Examination Timetable workbook.",
     endpoint: "/api/step1",
-    outputName: "Subject Codes - Exam Dates.xlsx",
-    buttonText: "Create Exam Date Sheet",
+    outputName: "Examination Timetable - Step 1 output.xlsx",
+    buttonText: "Create Step 1 Output",
     fields: [
       {
-        name: "subjectCodes",
-        label: "Subject-code Excel file",
+        name: "combinedTimetable",
+        label: "Examination Timetable input",
         accept: ".xlsx,.xls",
-        helper: "Use the Excel file that contains the subject codes."
-      },
-      {
-        name: "examTimetable",
-        label: "Official exam timetable PDF",
-        accept: ".pdf",
-        helper: "Use the official timetable PDF for the examination year."
+        helper: "Use the Examination Timetable workbook."
       }
     ],
-    before: ["Prepare both input files before starting.", "The app will match subject codes to written exam papers."],
-    after: ["Download the generated Excel file.", "Fill in all yellow fields before running Step 2."],
-    sampleHref: "/samples/Sample output - after Step 1.xlsx",
-    sampleText: "This is a sample output after Step 1"
-  },
-  {
-    id: "step2",
-    number: "2",
-    title: "Create Unavailability Sheet",
-    subtitle: "Upload the completed Step 1 Excel file after filling in the yellow fields.",
-    endpoint: "/api/step2",
-    outputName: "Subject Codes - Duty Schedule Output.xlsx",
-    buttonText: "Create Unavailability Sheet",
-    fields: [
-      {
-        name: "examDatesWorkbook",
-        label: "Completed Step 1 Excel file",
-        accept: ".xlsx,.xls",
-        helper: "Use the Step 1 output after filling in the required yellow fields."
-      }
-    ],
-    before: ["Check that candidate counts, invigilator requirements, and durations are filled.", "The app will create the unavailability grid."],
-    after: ["Download the generated Excel file.", "Fill in teacher names, teaching subjects/classes, and X marks before running Step 3."],
-    sampleHref: "/samples/Sample output - after Step 2.xlsx",
-    sampleText: "This is a sample output after Step 2"
+    after: ["Download the generated Excel file.", "Fill in invigilator requirements, teacher details, and X marks before running Step 2."],
+    sampleHref: "/samples/Combined - EXAMINATION TIMETABLE - output.xlsx",
+    sampleText: "This is a sample Step 1 output"
   },
   {
     id: "step3",
-    number: "3",
-    title: "Create Duty Schedule Sheet",
-    subtitle: "Upload the completed Step 2 Excel file after marking teacher availability.",
+    number: "2",
+    title: "Create Duty Schedule",
+    subtitle: "Upload the completed Step 1 output after marking teacher availability.",
     endpoint: "/api/step3",
     outputName: "Duty Schedule.xlsx",
     buttonText: "Create Duty Schedule Sheet",
     fields: [
       {
         name: "unavailabilityWorkbook",
-        label: "Completed Step 2 Excel file",
+        label: "Completed Step 1 output",
         accept: ".xlsx,.xls",
-        helper: "Use the Step 2 output after teacher information and unavailability are filled."
+        helper: "Use the Step 1 output after completing the yellow fields."
       }
     ],
-    before: ["Check the Exam Dates and Unavailability sheets.", "The app will assign invigilators and create the final Schedule sheet."],
     after: ["Download and inspect the final schedule.", "Summary totals are formula-based so manual edits can still update counts."],
-    sampleHref: "/samples/Sample output - after Step 3.xlsx",
-    sampleText: "This is a sample output after Step 3"
+    sampleHref: "/samples/Sample output - after Step 2.xlsx",
+    sampleText: "This is a sample Step 2 output"
   }
 ];
 
@@ -106,7 +76,6 @@ type StepStatus = {
 
 const initialStatus: Record<StepId, StepStatus> = {
   step1: { busy: false, message: "", kind: "idle" },
-  step2: { busy: false, message: "", kind: "idle" },
   step3: { busy: false, message: "", kind: "idle" }
 };
 
@@ -175,26 +144,24 @@ export default function Home() {
   return (
     <main>
       <section className="hero">
-        <p className="eyebrow">V2 Online Console</p>
-        <h1>CPE Duty Schedule Apps</h1>
+        <h1>CPE Scheduling App</h1>
         <p className="lead">
-          Upload the files for each step, let the app prepare the workbook, then download the Excel output for the next step.
+          Upload the Examination Timetable, prepare teacher availability, then generate the duty schedule.
         </p>
-        <div className="sample-row" aria-label="Sample input files">
-          <a href="/samples/Sample input - Subject code excel file.xlsx">This is a sample subject-code Excel file</a>
-          <a href="/samples/2025-gce-a-level-exam-timetable.pdf">This is a sample official exam timetable PDF</a>
-        </div>
       </section>
 
       <section className="before">
         <h2>Before You Start</h2>
-        <p>Prepare the subject-code Excel file and the official exam timetable PDF. Each step downloads an Excel file that becomes the input for the next step.</p>
+        <p>Get the Examination Timetable workbook ready before starting.</p>
+        <div className="sample-row" aria-label="Sample input file">
+          <a href="/samples/Combined - EXAMINATION TIMETABLE - Input.xlsx">This is a sample Examination Timetable Input</a>
+        </div>
       </section>
 
       <section className="workflow" aria-label="Main workflow">
         <div className="section-heading">
           <p className="eyebrow">Main Workflow</p>
-          <h2>Run The Three Steps</h2>
+          <h2>Run The Two Steps</h2>
         </div>
 
         {steps.map((step) => {
@@ -210,14 +177,6 @@ export default function Home() {
               </div>
 
               <div className="step-grid">
-                <div>
-                  <h4>What To Check</h4>
-                  <ul>
-                    {step.before.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </div>
                 <div>
                   <h4>After This Step</h4>
                   <ul>
@@ -272,7 +231,7 @@ export default function Home() {
 
       <footer>
         <p>Designed for internal school use. Uploaded files should be processed temporarily and not stored permanently.</p>
-        <p>&copy; {year} CPE Duty Schedule Apps</p>
+        <p>&copy; {year} CPE Scheduling App</p>
       </footer>
     </main>
   );

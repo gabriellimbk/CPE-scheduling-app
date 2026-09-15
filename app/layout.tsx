@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./styles.css";
 
 export const metadata: Metadata = {
-  title: "CPE Duty Schedule V2",
+  title: "CPE Scheduling App",
   description: "Online console for creating exam dates, unavailability sheets, and duty schedules."
 };
 

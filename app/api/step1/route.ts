@@ -1,4 +1,4 @@
-import { createExamDateSheet } from "@/lib/cpe";
+import { createCombinedStepOneOutput } from "@/lib/cpe";
 import { badRequest, excelDownload, friendlyError, readUpload, requireFile } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -6,13 +6,12 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   try {
     const formData = await request.formData();
-    const subjectCodes = requireFile(formData, "subjectCodes", "Subject-code Excel file");
-    const examTimetable = requireFile(formData, "examTimetable", "Official exam timetable PDF");
+    const combinedTimetable = requireFile(formData, "combinedTimetable", "Examination Timetable Excel file");
 
-    const output = await createExamDateSheet(await readUpload(subjectCodes), await readUpload(examTimetable));
+    const output = await createCombinedStepOneOutput(await readUpload(combinedTimetable));
 
-    return excelDownload(output, "Subject Codes - Exam Dates.xlsx");
+    return excelDownload(output, "Examination Timetable - Step 1 output.xlsx");
   } catch (error) {
-    return badRequest(friendlyError(error, "Step 1 could not read the uploaded files."));
+    return badRequest(friendlyError(error, "Step 1 could not read the uploaded Examination Timetable."));
   }
 }

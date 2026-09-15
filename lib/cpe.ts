@@ -1,5 +1,6 @@
 import path from "node:path";
 import zlib from "node:zlib";
+import JSZip from "jszip";
 import XlsxPopulate from "xlsx-populate";
 
 type Duty = "I" | "AA" | "S";
@@ -63,6 +64,7 @@ const EXCLUDED_PAPERS = new Set(["9539/03"]);
 const YELLOW = "FFFFFF00";
 const BLACK = "FF000000";
 const ORANGE = "FFFFC0C0";
+const HEADER_GREY = "FFD9D9D9";
 const RED = "FFFF0000";
 const CENTER = "center";
 
@@ -283,6 +285,53 @@ function setText(sheet: any, row: number, column: number, value: unknown) {
   sheet.cell(row, column).value(value === undefined ? "" : value);
 }
 
+async function normalizeXlsxPackage(buffer: Buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+
+  const workbookFile = zip.file("xl/workbook.xml");
+  if (workbookFile) {
+    let workbookXml = await workbookFile.async("string");
+    const rootMatch = workbookXml.match(/<workbook\b[^>]*>/);
+    if (rootMatch && workbookXml.includes("r:id") && !rootMatch[0].includes("xmlns:r=")) {
+      workbookXml = workbookXml.replace(
+        /<workbook\b/,
+        '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+      );
+      zip.file("xl/workbook.xml", workbookXml);
+    }
+  }
+
+  const contentTypesFile = zip.file("[Content_Types].xml");
+  if (contentTypesFile) {
+    let contentTypesXml = await contentTypesFile.async("string");
+    const worksheetContentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
+    const worksheetFiles = Object.keys(zip.files).filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name));
+    for (const worksheet of worksheetFiles) {
+      const partName = `/${worksheet}`;
+      if (!contentTypesXml.includes(`PartName="${partName}"`)) {
+        contentTypesXml = contentTypesXml.replace(
+          "</Types>",
+          `<Override PartName="${partName}" ContentType="${worksheetContentType}"/></Types>`
+        );
+      }
+    }
+    zip.file("[Content_Types].xml", contentTypesXml);
+  }
+
+  const stylesFile = zip.file("xl/styles.xml");
+  if (stylesFile) {
+    const stylesXml = (await stylesFile.async("string")).replaceAll("<fill/>", "<fill><patternFill/></fill>");
+    zip.file("xl/styles.xml", stylesXml);
+  }
+
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+}
+
+async function outputWorkbook(workbook: any) {
+  const output = await workbook.outputAsync() as Buffer;
+  return normalizeXlsxPackage(output);
+}
+
 function usedLastRow(sheet: any) {
   const range = sheet.usedRange();
   return range ? range.endCell().rowNumber() : 1;
@@ -351,7 +400,7 @@ export async function createExamDateSheet(subjectCodesBuffer: Buffer, timetableP
     setText(sheet, outRow, 23, aaMinutes);
   });
 
-  return workbook.outputAsync() as Promise<Buffer>;
+  return outputWorkbook(workbook);
 }
 
 function joinDeduped(values: string[]) {
@@ -369,6 +418,7 @@ function joinDeduped(values: string[]) {
 
 function collectExamRows(examSheet: any) {
   const rows: ExamRow[] = [];
+  const hasV3DurationColumns = clean(examSheet.cell(4, 19).value()).toLowerCase() === "session";
   for (let row = 4; row <= usedLastRow(examSheet); row++) {
     const sourceDate = clean(examSheet.cell(row, 1).value());
     const timeText = clean(examSheet.cell(row, 2).value());
@@ -377,17 +427,82 @@ function collectExamRows(examSheet: any) {
     const subjectName = clean(examSheet.cell(row, 5).value());
     const remarks = clean(examSheet.cell(row, 9).value());
     if (!sourceDate && !code && !paperNo && !subjectName) continue;
-    const helperDate = clean(examSheet.cell(row, 19).value()) || sourceDate;
-    const paper = clean(examSheet.cell(row, 20).value()) || `${code}/${paperNo}`;
-    const session = clean(examSheet.cell(row, 21).value()).toUpperCase() || sessionFromTime(timeText);
-    const normal = convertToMinutes(examSheet.cell(row, 22).value()) || convertToMinutes(examSheet.cell(row, 8).value());
-    let aa = convertToMinutes(examSheet.cell(row, 23).value()) || normal;
+    const helperDate = hasV3DurationColumns ? sourceDate : clean(examSheet.cell(row, 19).value()) || sourceDate;
+    const paper = hasV3DurationColumns ? `${code}/${paperNo}` : clean(examSheet.cell(row, 20).value()) || `${code}/${paperNo}`;
+    const session = (hasV3DurationColumns ? clean(examSheet.cell(row, 19).value()) : clean(examSheet.cell(row, 21).value())).toUpperCase() || sessionFromTime(timeText);
+    const normal = convertToMinutes(hasV3DurationColumns ? examSheet.cell(row, 20).value() : examSheet.cell(row, 22).value()) || convertToMinutes(examSheet.cell(row, 8).value());
+    let aa = convertToMinutes(hasV3DurationColumns ? examSheet.cell(row, 21).value() : examSheet.cell(row, 23).value()) || normal;
     if (/admin\s+break/i.test(remarks) && normal) aa = Math.round((normal * 1.25) / 5) * 5;
     if (!helperDate || !paper || !session) continue;
     rows.push({ date: helperDate, session, paper, subjectName, normal, aa });
   }
   if (rows.length === 0) throw new Error("No usable exam rows found.");
   return rows;
+}
+
+function ensureCombinedExamDatesSheet(workbook: any) {
+  const firstSheet = workbook.sheet(0);
+  const existingExamDates = workbook.sheet("Exam Dates");
+  if (existingExamDates && existingExamDates !== firstSheet) workbook.deleteSheet(existingExamDates);
+  firstSheet.name("Exam Dates");
+
+  for (const name of ["Unavailability", "Schedule", "Requirements"]) {
+    const sheet = workbook.sheet(name);
+    if (sheet) workbook.deleteSheet(sheet);
+  }
+
+  setText(firstSheet, 3, 16, "No. of Invigilators");
+  setText(firstSheet, 3, 19, "Duration of Papers");
+  setText(firstSheet, 3, 20, "");
+  setText(firstSheet, 3, 21, "");
+  setText(firstSheet, 3, 22, "");
+  setText(firstSheet, 3, 23, "");
+  setText(firstSheet, 4, 16, "Normal");
+  setText(firstSheet, 4, 17, "AA/Prompter");
+  setText(firstSheet, 4, 18, "Standby");
+  setText(firstSheet, 4, 19, "Session");
+  setText(firstSheet, 4, 20, "Normal");
+  setText(firstSheet, 4, 21, "AA");
+  setText(firstSheet, 4, 22, "");
+  setText(firstSheet, 4, 23, "");
+
+  let examRows = 0;
+  for (let row = 5; row <= usedLastRow(firstSheet); row++) {
+    const sourceDate = clean(firstSheet.cell(row, 1).value());
+    const timeText = clean(firstSheet.cell(row, 2).value());
+    const code = clean(firstSheet.cell(row, 3).value());
+    const paperNo = clean(firstSheet.cell(row, 4).value());
+    const subjectName = clean(firstSheet.cell(row, 5).value());
+    if (!sourceDate && !code && !paperNo && !subjectName) continue;
+
+    const normalMinutes = convertToMinutes(firstSheet.cell(row, 8).value());
+    const existingAaMinutes = convertToMinutes(firstSheet.cell(row, 21).value()) || convertToMinutes(firstSheet.cell(row, 23).value());
+    const aaMinutes = existingAaMinutes || defaultAaMinutes(normalMinutes);
+    firstSheet.cell(row, 14).formula(`SUM(J${row}:M${row})`);
+    setText(firstSheet, row, 19, sessionFromTime(timeText));
+    setText(firstSheet, row, 20, normalMinutes);
+    setText(firstSheet, row, 21, aaMinutes);
+    setText(firstSheet, row, 22, "");
+    setText(firstSheet, row, 23, "");
+    examRows++;
+  }
+
+  if (examRows === 0) throw new Error("No exam rows found in the combined examination timetable input.");
+  firstSheet.range("P3:R3").merged(true);
+  firstSheet.range("S3:U3").merged(true);
+  firstSheet.range("P3:U4").style("bold", true).style("fontFamily", "Aptos Narrow").style("fontSize", 11).style("horizontalAlignment", CENTER);
+  applyBorder(firstSheet.range("P3:U4"));
+  setFill(firstSheet.range("P3:U4"), HEADER_GREY);
+  firstSheet.range(`S5:U${usedLastRow(firstSheet)}`).style("fontFamily", "Aptos Narrow").style("fontSize", 11).style("horizontalAlignment", CENTER);
+  applyBorder(firstSheet.range(`S5:U${usedLastRow(firstSheet)}`));
+  return firstSheet;
+}
+
+export async function createCombinedStepOneOutput(combinedTimetableBuffer: Buffer) {
+  const workbook = await XlsxPopulate.fromDataAsync(combinedTimetableBuffer);
+  ensureCombinedExamDatesSheet(workbook);
+  const normalized = await outputWorkbook(workbook);
+  return createUnavailabilitySheet(normalized);
 }
 
 function setGridBase(sheet: any, lastColumn: number, labelColumn: number, firstGroupColumn: number, includeSummary: boolean) {
@@ -454,12 +569,18 @@ export async function createUnavailabilitySheet(examDatesBuffer: Buffer) {
     setText(unavailability, 4, column, joinDeduped(group.subjects));
   });
   setGridBase(unavailability, lastColumn, 4, 5, false);
+  if (lastColumn >= 6) {
+    for (let col = 6; col <= lastColumn; col++) unavailability.column(col).width(13);
+  }
+  [1, 2].forEach((row) => unavailability.row(row).height(19.2));
+  unavailability.row(3).height(43.2);
+  unavailability.row(4).height(57.6);
   if (lastColumn >= 5) {
     applyBorder(unavailability.range(`E1:${columnName(lastColumn)}4`));
     setFill(unavailability.range(`E6:${columnName(lastColumn)}55`), YELLOW);
     applyBorder(unavailability.range(`E6:${columnName(lastColumn)}55`));
   }
-  return workbook.outputAsync() as Promise<Buffer>;
+  return outputWorkbook(workbook);
 }
 
 function normalizeSubject(value: string) {
@@ -579,15 +700,18 @@ function createScheduleSheet(workbook: any, unavailability: any) {
 
 function collectPapers(examDates: any, schedule: any, unavailability: any) {
   const reqByCode = new Map<string, any>();
+  const hasV3DurationColumns = clean(examDates.cell(4, 19).value()).toLowerCase() === "session";
   for (let row = 4; row <= usedLastRow(examDates); row++) {
-    const code = clean(examDates.cell(row, 20).value());
+    const sourceCode = clean(examDates.cell(row, 3).value());
+    const paperNo = clean(examDates.cell(row, 4).value());
+    const code = hasV3DurationColumns && sourceCode && paperNo ? `${sourceCode}/${paperNo}` : clean(examDates.cell(row, 20).value());
     if (!code) continue;
     reqByCode.set(code, {
       normalRequired: asInt(examDates.cell(row, 16).value()),
       aaRequired: asInt(examDates.cell(row, 17).value()),
       standbyRequired: asInt(examDates.cell(row, 18).value()),
-      normalMinutes: asInt(examDates.cell(row, 22).value()),
-      aaMinutes: asInt(examDates.cell(row, 23).value())
+      normalMinutes: asInt(examDates.cell(row, hasV3DurationColumns ? 20 : 22).value()),
+      aaMinutes: asInt(examDates.cell(row, hasV3DurationColumns ? 21 : 23).value())
     });
   }
   const scheduleFirst = findHeaderColumn(schedule, 3, "Subject Code") + 1;
@@ -889,5 +1013,5 @@ export async function createDutyScheduleSheet(unavailabilityBuffer: Buffer) {
   targetMinutes = invigilators.reduce((sum, inv) => sum + inv.minutes, 0) / invigilators.length;
   improveByTransfer(invigilators, paperByColumn, targetMinutes);
   writeSchedule(schedule, papers, invigilators, shortages);
-  return workbook.outputAsync() as Promise<Buffer>;
+  return outputWorkbook(workbook);
 }
