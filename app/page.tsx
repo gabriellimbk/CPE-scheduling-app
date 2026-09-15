@@ -176,18 +176,6 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="step-grid">
-                <div>
-                  <h4>After This Step</h4>
-                  <ul>
-                    {step.after.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                  <a className="sample-link" href={step.sampleHref}>{step.sampleText}</a>
-                </div>
-              </div>
-
               <form className="upload-panel" onSubmit={(event) => handleSubmit(event, step)}>
                 {step.fields.map((field) => (
                   <label className="file-field" key={field.name}>
@@ -208,6 +196,18 @@ export default function Home() {
                   <p className={`status ${status.kind}`}>{status.message}</p>
                 ) : null}
               </form>
+
+              <div className="step-grid">
+                <div>
+                  <h4>After This Step</h4>
+                  <ul>
+                    {step.after.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                  <a className="sample-link" href={step.sampleHref}>{step.sampleText}</a>
+                </div>
+              </div>
             </article>
           );
         })}

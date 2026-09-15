@@ -488,13 +488,16 @@ function ensureCombinedExamDatesSheet(workbook: any) {
   }
 
   if (examRows === 0) throw new Error("No exam rows found in the combined examination timetable input.");
+  const lastExamRow = usedLastRow(firstSheet);
   firstSheet.range("P3:R3").merged(true);
   firstSheet.range("S3:U3").merged(true);
   firstSheet.range("P3:U4").style("bold", true).style("fontFamily", "Aptos Narrow").style("fontSize", 11).style("horizontalAlignment", CENTER);
   applyBorder(firstSheet.range("P3:U4"));
   setFill(firstSheet.range("P3:U4"), HEADER_GREY);
-  firstSheet.range(`S5:U${usedLastRow(firstSheet)}`).style("fontFamily", "Aptos Narrow").style("fontSize", 11).style("horizontalAlignment", CENTER);
-  applyBorder(firstSheet.range(`S5:U${usedLastRow(firstSheet)}`));
+  setFill(firstSheet.range(`P5:R${lastExamRow}`), YELLOW);
+  applyBorder(firstSheet.range(`P5:R${lastExamRow}`));
+  firstSheet.range(`S5:U${lastExamRow}`).style("fontFamily", "Aptos Narrow").style("fontSize", 11).style("horizontalAlignment", CENTER);
+  applyBorder(firstSheet.range(`S5:U${lastExamRow}`));
   return firstSheet;
 }
 
@@ -560,7 +563,11 @@ export async function createUnavailabilitySheet(examDatesBuffer: Buffer) {
   setText(unavailability, 5, 1, "Name");
   setText(unavailability, 5, 2, "Teaching Subject");
   setText(unavailability, 5, 3, "Teaching classes");
-  for (let row = 6; row <= 55; row++) setText(unavailability, row, 1, `Inv${row - 5}`);
+  for (let row = 6; row <= 55; row++) {
+    setText(unavailability, row, 1, "");
+    setText(unavailability, row, 2, "");
+    setText(unavailability, row, 3, "");
+  }
   groups.forEach((group, index) => {
     const column = 5 + index;
     setText(unavailability, 1, column, group.date);
@@ -575,6 +582,8 @@ export async function createUnavailabilitySheet(examDatesBuffer: Buffer) {
   [1, 2].forEach((row) => unavailability.row(row).height(19.2));
   unavailability.row(3).height(43.2);
   unavailability.row(4).height(57.6);
+  setFill(unavailability.range("A6:C55"), YELLOW);
+  applyBorder(unavailability.range("A6:C55"));
   if (lastColumn >= 5) {
     applyBorder(unavailability.range(`E1:${columnName(lastColumn)}4`));
     setFill(unavailability.range(`E6:${columnName(lastColumn)}55`), YELLOW);
