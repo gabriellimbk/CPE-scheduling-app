@@ -152,7 +152,7 @@ export default function Home() {
 
       <section className="before">
         <h2>Before You Start</h2>
-        <p>Get the Examination Timetable workbook ready before starting.</p>
+        <p>Get the Examination Timetable workbook ready before starting. Delete any irrelevant examination paper rows before uploading.</p>
         <div className="sample-row" aria-label="Sample input file">
           <a href="/samples/Combined - EXAMINATION TIMETABLE - Input.xlsx">This is a sample Examination Timetable Input</a>
         </div>
