@@ -342,6 +342,45 @@ function usedLastColumn(sheet: any) {
   return range ? range.endCell().columnNumber() : 1;
 }
 
+function normalizedHeader(value: unknown) {
+  return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function findHeaderColumnOptional(sheet: any, row: number, headers: string[]) {
+  const targets = new Set(headers.map(normalizedHeader));
+  for (let column = 1; column <= usedLastColumn(sheet); column++) {
+    if (targets.has(normalizedHeader(sheet.cell(row, column).value()))) return column;
+  }
+  return 0;
+}
+
+function findHeaderColumnInRow(sheet: any, row: number, headers: string[]) {
+  const column = findHeaderColumnOptional(sheet, row, headers);
+  if (!column) throw new Error(`Could not find '${headers[0]}' in row ${row} of sheet '${sheet.name()}'.`);
+  return column;
+}
+
+function timetableColumns(sheet: any) {
+  const ecEnd = findHeaderColumnOptional(sheet, 3, ["EC End Time"]);
+  return {
+    date: findHeaderColumnInRow(sheet, 3, ["Date"]),
+    time: findHeaderColumnInRow(sheet, 3, ["Time"]),
+    code: findHeaderColumnInRow(sheet, 3, ["Subject Code"]),
+    paperNo: findHeaderColumnInRow(sheet, 3, ["Paper No"]),
+    subjectName: findHeaderColumnInRow(sheet, 3, ["Subject Name"]),
+    duration: findHeaderColumnInRow(sheet, 3, ["Duration (HH:MM)", "Duration"]),
+    remarks: findHeaderColumnOptional(sheet, 3, ["Remarks"]),
+    total: findHeaderColumnOptional(sheet, 4, ["Total"]),
+    ecEnd
+  };
+}
+
+function helperColumns(sheet: any) {
+  const invigilators = findHeaderColumnOptional(sheet, 3, ["No. of Invigilators"]);
+  const duration = findHeaderColumnOptional(sheet, 3, ["Duration of Papers"]);
+  return { invigilators, duration };
+}
+
 async function readSubjectCodes(buffer: Buffer) {
   const workbook = await XlsxPopulate.fromDataAsync(buffer);
   const sheet = workbook.sheet(0);
@@ -418,23 +457,23 @@ function joinDeduped(values: string[]) {
 
 function collectExamRows(examSheet: any) {
   const rows: ExamRow[] = [];
-  const hasV3DurationColumns = clean(examSheet.cell(4, 19).value()).toLowerCase() === "session";
-  for (let row = 4; row <= usedLastRow(examSheet); row++) {
-    const sourceDate = clean(examSheet.cell(row, 1).value());
-    const timeText = clean(examSheet.cell(row, 2).value());
-    const code = clean(examSheet.cell(row, 3).value());
-    const paperNo = clean(examSheet.cell(row, 4).value());
-    const subjectName = clean(examSheet.cell(row, 5).value());
-    const remarks = clean(examSheet.cell(row, 9).value());
+  const columns = timetableColumns(examSheet);
+  const helpers = helperColumns(examSheet);
+  for (let row = 5; row <= usedLastRow(examSheet); row++) {
+    const sourceDate = clean(examSheet.cell(row, columns.date).value());
+    const timeText = clean(examSheet.cell(row, columns.time).value());
+    const code = clean(examSheet.cell(row, columns.code).value());
+    const paperNo = clean(examSheet.cell(row, columns.paperNo).value());
+    const subjectName = clean(examSheet.cell(row, columns.subjectName).value());
+    const remarks = columns.remarks ? clean(examSheet.cell(row, columns.remarks).value()) : "";
     if (!sourceDate && !code && !paperNo && !subjectName) continue;
-    const helperDate = hasV3DurationColumns ? sourceDate : clean(examSheet.cell(row, 19).value()) || sourceDate;
-    const paper = hasV3DurationColumns ? `${code}/${paperNo}` : clean(examSheet.cell(row, 20).value()) || `${code}/${paperNo}`;
-    const session = (hasV3DurationColumns ? clean(examSheet.cell(row, 19).value()) : clean(examSheet.cell(row, 21).value())).toUpperCase() || sessionFromTime(timeText);
-    const normal = convertToMinutes(hasV3DurationColumns ? examSheet.cell(row, 20).value() : examSheet.cell(row, 22).value()) || convertToMinutes(examSheet.cell(row, 8).value());
-    let aa = convertToMinutes(hasV3DurationColumns ? examSheet.cell(row, 21).value() : examSheet.cell(row, 23).value()) || normal;
+    const paper = `${code}/${paperNo}`;
+    const session = (helpers.duration ? clean(examSheet.cell(row, helpers.duration).value()) : "").toUpperCase() || sessionFromTime(timeText);
+    const normal = convertToMinutes(helpers.duration ? examSheet.cell(row, helpers.duration + 1).value() : undefined) || convertToMinutes(examSheet.cell(row, columns.duration).value());
+    let aa = convertToMinutes(helpers.duration ? examSheet.cell(row, helpers.duration + 2).value() : undefined) || normal;
     if (/admin\s+break/i.test(remarks) && normal) aa = Math.round((normal * 1.25) / 5) * 5;
-    if (!helperDate || !paper || !session) continue;
-    rows.push({ date: helperDate, session, paper, subjectName, normal, aa });
+    if (!sourceDate || !paper || !session) continue;
+    rows.push({ date: sourceDate, session, paper, subjectName, normal, aa });
   }
   if (rows.length === 0) throw new Error("No usable exam rows found.");
   return rows;
@@ -442,6 +481,11 @@ function collectExamRows(examSheet: any) {
 
 function ensureCombinedExamDatesSheet(workbook: any) {
   const firstSheet = workbook.sheet(0);
+  const columns = timetableColumns(firstSheet);
+  const helperStart = (columns.ecEnd || usedLastColumn(firstSheet)) + 1;
+  const invigilatorStart = helperStart;
+  const durationStart = helperStart + 3;
+  const helperEnd = helperStart + 7;
   const existingExamDates = workbook.sheet("Exam Dates");
   if (existingExamDates && existingExamDates !== firstSheet) workbook.deleteSheet(existingExamDates);
   firstSheet.name("Exam Dates");
@@ -451,53 +495,54 @@ function ensureCombinedExamDatesSheet(workbook: any) {
     if (sheet) workbook.deleteSheet(sheet);
   }
 
-  setText(firstSheet, 3, 16, "No. of Invigilators");
-  setText(firstSheet, 3, 19, "Duration of Papers");
-  setText(firstSheet, 3, 20, "");
-  setText(firstSheet, 3, 21, "");
-  setText(firstSheet, 3, 22, "");
-  setText(firstSheet, 3, 23, "");
-  setText(firstSheet, 4, 16, "Normal");
-  setText(firstSheet, 4, 17, "AA/Prompter");
-  setText(firstSheet, 4, 18, "Standby");
-  setText(firstSheet, 4, 19, "Session");
-  setText(firstSheet, 4, 20, "Normal");
-  setText(firstSheet, 4, 21, "AA");
-  setText(firstSheet, 4, 22, "");
-  setText(firstSheet, 4, 23, "");
+  setText(firstSheet, 3, invigilatorStart, "No. of Invigilators");
+  setText(firstSheet, 3, durationStart, "Duration of Papers");
+  for (let column = invigilatorStart + 1; column <= helperEnd; column++) {
+    if (column !== durationStart) setText(firstSheet, 3, column, "");
+  }
+  setText(firstSheet, 4, invigilatorStart, "Normal");
+  setText(firstSheet, 4, invigilatorStart + 1, "AA/Prompter");
+  setText(firstSheet, 4, invigilatorStart + 2, "Standby");
+  setText(firstSheet, 4, durationStart, "Session");
+  setText(firstSheet, 4, durationStart + 1, "Normal");
+  setText(firstSheet, 4, durationStart + 2, "AA");
+  setText(firstSheet, 4, durationStart + 3, "");
+  setText(firstSheet, 4, durationStart + 4, "");
 
   let examRows = 0;
   for (let row = 5; row <= usedLastRow(firstSheet); row++) {
-    const sourceDate = clean(firstSheet.cell(row, 1).value());
-    const timeText = clean(firstSheet.cell(row, 2).value());
-    const code = clean(firstSheet.cell(row, 3).value());
-    const paperNo = clean(firstSheet.cell(row, 4).value());
-    const subjectName = clean(firstSheet.cell(row, 5).value());
+    const sourceDate = clean(firstSheet.cell(row, columns.date).value());
+    const timeText = clean(firstSheet.cell(row, columns.time).value());
+    const code = clean(firstSheet.cell(row, columns.code).value());
+    const paperNo = clean(firstSheet.cell(row, columns.paperNo).value());
+    const subjectName = clean(firstSheet.cell(row, columns.subjectName).value());
     if (!sourceDate && !code && !paperNo && !subjectName) continue;
 
-    const normalMinutes = convertToMinutes(firstSheet.cell(row, 8).value());
-    const existingAaMinutes = convertToMinutes(firstSheet.cell(row, 21).value()) || convertToMinutes(firstSheet.cell(row, 23).value());
+    const normalMinutes = convertToMinutes(firstSheet.cell(row, columns.duration).value());
+    const existingAaMinutes = convertToMinutes(firstSheet.cell(row, durationStart + 2).value());
     const aaMinutes = existingAaMinutes || defaultAaMinutes(normalMinutes);
-    firstSheet.cell(row, 14).formula(`SUM(J${row}:M${row})`);
-    setText(firstSheet, row, 19, sessionFromTime(timeText));
-    setText(firstSheet, row, 20, normalMinutes);
-    setText(firstSheet, row, 21, aaMinutes);
-    setText(firstSheet, row, 22, "");
-    setText(firstSheet, row, 23, "");
+    if (columns.total) firstSheet.cell(row, columns.total).formula(`SUM(${columnName(columns.total - 4)}${row}:${columnName(columns.total - 1)}${row})`);
+    setText(firstSheet, row, durationStart, sessionFromTime(timeText));
+    setText(firstSheet, row, durationStart + 1, normalMinutes);
+    setText(firstSheet, row, durationStart + 2, aaMinutes);
+    setText(firstSheet, row, durationStart + 3, "");
+    setText(firstSheet, row, durationStart + 4, "");
     examRows++;
   }
 
   if (examRows === 0) throw new Error("No exam rows found in the combined examination timetable input.");
   const lastExamRow = usedLastRow(firstSheet);
-  firstSheet.range("P3:R3").merged(true);
-  firstSheet.range("S3:U3").merged(true);
-  firstSheet.range("P3:U4").style("bold", true).style("fontFamily", "Aptos Narrow").style("fontSize", 11).style("horizontalAlignment", CENTER);
-  applyBorder(firstSheet.range("P3:U4"));
-  setFill(firstSheet.range("P3:U4"), HEADER_GREY);
-  setFill(firstSheet.range(`P5:R${lastExamRow}`), YELLOW);
-  applyBorder(firstSheet.range(`P5:R${lastExamRow}`));
-  firstSheet.range(`S5:U${lastExamRow}`).style("fontFamily", "Aptos Narrow").style("fontSize", 11).style("horizontalAlignment", CENTER);
-  applyBorder(firstSheet.range(`S5:U${lastExamRow}`));
+  const invigilatorHeader = `${columnName(invigilatorStart)}3:${columnName(invigilatorStart + 2)}3`;
+  const durationHeader = `${columnName(durationStart)}3:${columnName(durationStart + 2)}3`;
+  firstSheet.range(invigilatorHeader).merged(true);
+  firstSheet.range(durationHeader).merged(true);
+  firstSheet.range(`${columnName(invigilatorStart)}3:${columnName(durationStart + 2)}4`).style("bold", true).style("fontFamily", "Aptos Narrow").style("fontSize", 11).style("horizontalAlignment", CENTER);
+  applyBorder(firstSheet.range(`${columnName(invigilatorStart)}3:${columnName(durationStart + 2)}4`));
+  setFill(firstSheet.range(`${columnName(invigilatorStart)}3:${columnName(durationStart + 2)}4`), HEADER_GREY);
+  setFill(firstSheet.range(`${columnName(invigilatorStart)}5:${columnName(invigilatorStart + 2)}${lastExamRow}`), YELLOW);
+  applyBorder(firstSheet.range(`${columnName(invigilatorStart)}5:${columnName(invigilatorStart + 2)}${lastExamRow}`));
+  firstSheet.range(`${columnName(durationStart)}5:${columnName(durationStart + 2)}${lastExamRow}`).style("fontFamily", "Aptos Narrow").style("fontSize", 11).style("horizontalAlignment", CENTER);
+  applyBorder(firstSheet.range(`${columnName(durationStart)}5:${columnName(durationStart + 2)}${lastExamRow}`));
   return firstSheet;
 }
 
@@ -709,18 +754,21 @@ function createScheduleSheet(workbook: any, unavailability: any) {
 
 function collectPapers(examDates: any, schedule: any, unavailability: any) {
   const reqByCode = new Map<string, any>();
-  const hasV3DurationColumns = clean(examDates.cell(4, 19).value()).toLowerCase() === "session";
-  for (let row = 4; row <= usedLastRow(examDates); row++) {
-    const sourceCode = clean(examDates.cell(row, 3).value());
-    const paperNo = clean(examDates.cell(row, 4).value());
-    const code = hasV3DurationColumns && sourceCode && paperNo ? `${sourceCode}/${paperNo}` : clean(examDates.cell(row, 20).value());
+  const columns = timetableColumns(examDates);
+  const helpers = helperColumns(examDates);
+  const invigilatorStart = helpers.invigilators || 16;
+  const durationStart = helpers.duration || 19;
+  for (let row = 5; row <= usedLastRow(examDates); row++) {
+    const sourceCode = clean(examDates.cell(row, columns.code).value());
+    const paperNo = clean(examDates.cell(row, columns.paperNo).value());
+    const code = sourceCode && paperNo ? `${sourceCode}/${paperNo}` : "";
     if (!code) continue;
     reqByCode.set(code, {
-      normalRequired: asInt(examDates.cell(row, 16).value()),
-      aaRequired: asInt(examDates.cell(row, 17).value()),
-      standbyRequired: asInt(examDates.cell(row, 18).value()),
-      normalMinutes: asInt(examDates.cell(row, hasV3DurationColumns ? 20 : 22).value()),
-      aaMinutes: asInt(examDates.cell(row, hasV3DurationColumns ? 21 : 23).value())
+      normalRequired: asInt(examDates.cell(row, invigilatorStart).value()),
+      aaRequired: asInt(examDates.cell(row, invigilatorStart + 1).value()),
+      standbyRequired: asInt(examDates.cell(row, invigilatorStart + 2).value()),
+      normalMinutes: asInt(examDates.cell(row, durationStart + 1).value()),
+      aaMinutes: asInt(examDates.cell(row, durationStart + 2).value())
     });
   }
   const scheduleFirst = findHeaderColumn(schedule, 3, "Subject Code") + 1;
